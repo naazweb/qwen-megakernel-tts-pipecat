@@ -36,7 +36,6 @@ from qwen_megakernel.model import TalkerDecoder
 SAMPLE_RATE = 24000
 CHUNK_TOKENS = 6      # tokens per audio chunk (~0.5 s at 12 Hz)
 MAX_NEW_TOKENS = 2048
-CODEC_EOS_ID = 2150
 
 
 class QwenTTSEngine:
@@ -48,25 +47,26 @@ class QwenTTSEngine:
 
     def __init__(self, model_name: str = "Qwen/Qwen3-TTS", device: str = "cuda",
                  verbose: bool = True):
-        from transformers import AutoProcessor, Qwen3TTSForConditionalGeneration
+        from qwen_tts import Qwen3TTSModel
 
         if verbose:
             logger.info(f"Loading {model_name}...")
 
         self.device = device
-        self.hf = Qwen3TTSForConditionalGeneration.from_pretrained(
+        self._qwen = Qwen3TTSModel.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16,
             device_map=device,
+            dtype=torch.bfloat16,
             attn_implementation="sdpa",
         )
+        self.hf = self._qwen.model
         self.hf.eval()
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.processor = self._qwen.processor
 
         # Megakernel decoder — loads talker backbone weights from same checkpoint
         if verbose:
             logger.info("Loading megakernel TalkerDecoder...")
-        self.decoder = TalkerDecoder(model_name=model_name, verbose=verbose)
+        self.decoder = TalkerDecoder(self._qwen, verbose=verbose)
 
         if verbose:
             logger.info("QwenTTSEngine ready.")
@@ -78,12 +78,13 @@ class QwenTTSEngine:
         Puts np.ndarray float32 PCM chunks into pcm_queue, then None sentinel.
         """
         t0 = time.perf_counter()
-        talker = self.hf.model.talker
+        talker = self.hf.talker
         cfg = self.hf.config
         talker_cfg = cfg.talker_config
         num_code_groups = talker_cfg.num_code_groups   # 16
         device = self.device
         dtype = torch.bfloat16
+        eos_id = talker_cfg.codec_eos_token_id
         language_id = talker_cfg.codec_language_id["english"]
 
         # ── 1. HF prefill ────────────────────────────────────────────────────
@@ -181,7 +182,7 @@ class QwenTTSEngine:
 
         with torch.inference_mode():
             for _ in range(MAX_NEW_TOKENS):
-                if token == CODEC_EOS_ID:
+                if token == eos_id:
                     break
 
                 # codebooks 1-15
@@ -223,7 +224,7 @@ class QwenTTSEngine:
 
     def _vocoder(self, codes: list[torch.Tensor]) -> np.ndarray:
         codes_tensor = torch.stack(codes, dim=0).unsqueeze(0)  # [1, T, 16]
-        wavs, _ = self.hf.model.speech_tokenizer.decode(
+        wavs, _ = self.hf.speech_tokenizer.decode(
             [{"audio_codes": codes_tensor}]
         )
         return wavs[0].astype(np.float32)
@@ -248,6 +249,9 @@ class QwenTTSService(TTSService):
         self._model_name = model_name
         self._device = device
         self._engine: QwenTTSEngine | None = None
+        self._settings.model = model_name
+        self._settings.voice = None
+        self._settings.language = None
 
     def _ensure_loaded(self):
         if self._engine is None:
