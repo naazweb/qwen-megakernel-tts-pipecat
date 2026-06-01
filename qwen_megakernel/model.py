@@ -8,14 +8,66 @@ import torch
 NUM_LAYERS = 28
 NUM_KV_HEADS = 8
 HEAD_DIM = 128
-HIDDEN_SIZE = 1024
-INTERMEDIATE_SIZE = 3072
-Q_SIZE = 16 * HEAD_DIM  # 2048
-KV_SIZE = 8 * HEAD_DIM  # 1024
-MAX_SEQ_LEN = 2048
-VOCAB_SIZE = 151936
+HIDDEN_SIZE = 2048
+INTERMEDIATE_SIZE = 6144
+Q_SIZE = 16 * HEAD_DIM   # 2048
+KV_SIZE = 8 * HEAD_DIM   # 1024
+MAX_SEQ_LEN = 4096
+VOCAB_SIZE = 3072
+
+# MRoPE interleaved sections for Qwen3-TTS talker
+# mrope_section = [24, 20, 20] means each section uses that many (cos,sin) pairs
+# giving 24+20+20 = 64 pairs = 128 dims per head
+MROPE_SECTION = [24, 20, 20]  # text, time, audio
+ROPE_THETA = 1_000_000.0
 
 _decode = torch.ops.qwen_megakernel_C.decode
+
+
+def _build_mrope_tables(max_seq_len: int):
+    """Build MRoPE cos/sin tables for the Qwen3-TTS talker.
+
+    The talker uses interleaved MRoPE with sections [24, 20, 20] (text, time, audio).
+    Each section uses its own position index; during single-token decode we pass
+    the same scalar position for all three sections (time position dominates).
+    The kernel reads cos_table[position * HEAD_DIM : (position+1) * HEAD_DIM]
+    so we pre-bake the full interleaved layout into the table rows.
+    """
+    import torch
+
+    # Build inv_freq for each section independently
+    # Section dims: 24, 20, 20 pairs → 48, 40, 40 elements per head
+    section_dims = [s * 2 for s in MROPE_SECTION]  # [48, 40, 40]
+    inv_freqs = []
+    offset = 0
+    for dim in section_dims:
+        inv_freq = 1.0 / (
+            ROPE_THETA ** (torch.arange(0, dim, 2, dtype=torch.float32) / HEAD_DIM)
+        )
+        inv_freqs.append(inv_freq)
+        offset += dim
+
+    positions = torch.arange(max_seq_len, dtype=torch.float32)
+
+    cos_rows = []
+    sin_rows = []
+    for pos_idx in range(max_seq_len):
+        cos_parts = []
+        sin_parts = []
+        for inv_freq in inv_freqs:
+            freqs = positions[pos_idx] * inv_freq  # [dim/2]
+            cos_parts.append(torch.cos(freqs))
+            sin_parts.append(torch.sin(freqs))
+        # Interleaved layout: concatenate section cos values, then repeat for
+        # the second half (standard rotate-half convention the kernel uses)
+        cos_row = torch.cat(cos_parts)  # [64]
+        sin_row = torch.cat(sin_parts)  # [64]
+        cos_rows.append(torch.cat([cos_row, cos_row]))  # [128]
+        sin_rows.append(torch.cat([sin_row, sin_row]))  # [128]
+
+    cos_table = torch.stack(cos_rows).to(torch.bfloat16).cuda().contiguous()
+    sin_table = torch.stack(sin_rows).to(torch.bfloat16).cuda().contiguous()
+    return cos_table, sin_table
 
 
 def load_weights(model_name="Qwen/Qwen3-0.6B", verbose: bool = True):
@@ -50,14 +102,8 @@ def load_weights(model_name="Qwen/Qwen3-0.6B", verbose: bool = True):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     state = model.state_dict()
 
-    # RoPE tables
-    inv_freq = 1.0 / (
-        10000.0 ** (torch.arange(0, HEAD_DIM, 2, dtype=torch.float32) / HEAD_DIM)
-    )
-    positions = torch.arange(MAX_SEQ_LEN, dtype=torch.float32)
-    freqs = torch.outer(positions, inv_freq)
-    cos_table = torch.cos(freqs).repeat(1, 2).to(torch.bfloat16).cuda().contiguous()
-    sin_table = torch.sin(freqs).repeat(1, 2).to(torch.bfloat16).cuda().contiguous()
+    # MRoPE tables for Qwen3-TTS talker
+    cos_table, sin_table = _build_mrope_tables(MAX_SEQ_LEN)
 
     # Per-layer weight list (11 tensors per layer, flattened)
     layer_weights = []
@@ -159,6 +205,7 @@ class Decoder:
         self._attn_out = torch.empty(Q_SIZE, **f32)
         self._mlp_inter = torch.empty(INTERMEDIATE_SIZE, **f32)
         self._norm_out = torch.empty(HIDDEN_SIZE, **f32)
+        # bmax scratch: must be >= LDG_LM_NUM_BLOCKS; 4096 covers any tuning
         self._bmax_vals = torch.empty(4096, **f32)
         self._bmax_idxs = torch.empty(4096, dtype=torch.int32, device="cuda")
         self._out_token = torch.empty(1, dtype=torch.int32, device="cuda")
