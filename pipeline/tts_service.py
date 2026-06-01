@@ -14,6 +14,7 @@ import asyncio
 import os
 import queue
 import sys
+import threading
 import time
 from typing import AsyncGenerator
 
@@ -31,8 +32,7 @@ from pipecat.frames.frames import (
 from pipecat.services.tts_service import TTSService, TextAggregationMode
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../qwen-tts-pipecat"))
-from tts_engine import TalkerDecoder
+from qwen_megakernel.model import TalkerDecoder
 
 SAMPLE_RATE = 24000
 CHUNK_TOKENS = 6      # tokens per audio chunk (~0.5 s at 12 Hz)
@@ -67,17 +67,38 @@ class QwenTTSEngine:
         # Megakernel decoder — loads talker backbone weights from same checkpoint
         if verbose:
             logger.info("Loading megakernel TalkerDecoder...")
-        self.decoder = TalkerDecoder(self._qwen, verbose=verbose)
+        self.decoder = TalkerDecoder(model_name=model_name, verbose=verbose)
+
+        # Serializes access to decoder state across synthesize() calls; the
+        # cancel event lets an in-flight synthesize bail out at the next loop
+        # iteration when Pipecat interrupts the bot.
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()
 
         if verbose:
             logger.info("QwenTTSEngine ready.")
+
+    def cancel(self) -> None:
+        """Signal the in-progress synthesize() to abort at the next iteration."""
+        self._cancel.set()
 
     # ------------------------------------------------------------------
     def synthesize(self, text: str, pcm_queue: queue.Queue) -> None:
         """
         Called in a background thread.
         Puts np.ndarray float32 PCM chunks into pcm_queue, then None sentinel.
+        Serialized via self._lock so a new utterance cannot reset decoder
+        state while a previous (possibly cancelled) call is still inside the
+        megakernel.
         """
+        with self._lock:
+            self._cancel.clear()
+            try:
+                self._synthesize_impl(text, pcm_queue)
+            finally:
+                pcm_queue.put(None)
+
+    def _synthesize_impl(self, text: str, pcm_queue: queue.Queue) -> None:
         t0 = time.perf_counter()
         talker = self.hf.talker
         cfg = self.hf.config
@@ -183,7 +204,7 @@ class QwenTTSEngine:
 
         with torch.inference_mode():
             for _ in range(MAX_NEW_TOKENS):
-                if token == eos_id:
+                if token == eos_id or self._cancel.is_set():
                     break
 
                 # codebooks 1-15
@@ -216,12 +237,11 @@ class QwenTTSEngine:
                     pcm_queue.put(pcm)
                     chunk_codes = []
 
-        # flush tail
-        if chunk_codes:
+        # flush tail (skip if we bailed on cancel — partial chunk is useless)
+        if chunk_codes and not self._cancel.is_set():
             pcm_queue.put(self._vocoder(chunk_codes))
 
         logger.info(f"Synthesis done: {(time.perf_counter() - t0)*1000:.1f} ms")
-        pcm_queue.put(None)
 
     def _vocoder(self, codes: list[torch.Tensor]) -> np.ndarray:
         codes_tensor = torch.stack(codes, dim=0).unsqueeze(0)  # [1, T, 16]
@@ -299,6 +319,10 @@ class QwenTTSService(TTSService):
             yield TTSStoppedFrame(context_id=context_id)
             await self.remove_audio_context(context_id)
 
+        except asyncio.CancelledError:
+            if self._engine is not None:
+                self._engine.cancel()
+            raise
         except Exception as e:
             logger.error(f"QwenTTSService error: {e}", exc_info=True)
             yield ErrorFrame(str(e))
