@@ -1,7 +1,12 @@
 torch>=2.0.0
-transformers>=4.40.0
-triton>=2.2.0
+transformers>=4.57.3
 ninja
 accelerate
 safetensors
 flask>=3.0.0
+numpy
+
+# Pipecat + transports
+pipecat-ai[daily,deepgram,google,runner,silero]
+pipecat-ai-small-webrtc-prebuilt
+python-dotenv
