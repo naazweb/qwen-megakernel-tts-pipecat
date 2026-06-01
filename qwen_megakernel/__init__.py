@@ -4,6 +4,12 @@ from qwen_megakernel.build import get_extension as _get_ext
 
 _get_ext()
 
-from qwen_megakernel.model import load_weights, Decoder, generate  # noqa: E402
+from qwen_megakernel.model import (  # noqa: E402
+    load_weights,
+    load_talker_weights,
+    Decoder,
+    TalkerDecoder,
+    generate,
+)
 
-__all__ = ["load_weights", "Decoder", "generate"]
+__all__ = ["load_weights", "load_talker_weights", "Decoder", "TalkerDecoder", "generate"]

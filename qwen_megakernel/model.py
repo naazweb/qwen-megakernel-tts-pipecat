@@ -295,3 +295,80 @@ class Decoder:
 def generate(prompt: str, max_tokens: int = 100, verbose: bool = True) -> str:
     """One-shot convenience: load model, generate, return text."""
     return Decoder(verbose=verbose).generate(prompt, max_tokens)
+
+
+def load_talker_weights(model_name: str = "Qwen/Qwen3-TTS", verbose: bool = True):
+    """Load Qwen3-TTS talker backbone weights into the megakernel weight dict.
+
+    Only loads the talker transformer (28 layers, hidden 2048) — not the
+    code_predictor, text_projection, or speech tokenizer.
+    Returns (weights_dict, None) — no tokenizer needed for TTS decode.
+    """
+    import os
+    if not verbose:
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+        from transformers.utils import logging as hf_logging
+        hf_logging.set_verbosity_error()
+
+    if verbose:
+        print(f"Loading {model_name} talker weights...")
+
+    from safetensors.torch import load_file
+    from huggingface_hub import hf_hub_download
+
+    shard = hf_hub_download(repo_id=model_name, filename="model.safetensors")
+    if verbose:
+        print("Loading safetensors shard...")
+    sd = load_file(shard, device="cuda")
+
+    cos_table, sin_table = _build_mrope_tables(MAX_SEQ_LEN)
+
+    layer_weights = []
+    for i in range(NUM_LAYERS):
+        p = f"talker.model.layers.{i}."
+        layer_weights.extend([
+            sd[p + "input_layernorm.weight"].contiguous(),
+            sd[p + "self_attn.q_proj.weight"].contiguous(),
+            sd[p + "self_attn.k_proj.weight"].contiguous(),
+            sd[p + "self_attn.v_proj.weight"].contiguous(),
+            sd[p + "self_attn.q_norm.weight"].contiguous(),
+            sd[p + "self_attn.k_norm.weight"].contiguous(),
+            sd[p + "self_attn.o_proj.weight"].contiguous(),
+            sd[p + "post_attention_layernorm.weight"].contiguous(),
+            sd[p + "mlp.gate_proj.weight"].contiguous(),
+            sd[p + "mlp.up_proj.weight"].contiguous(),
+            sd[p + "mlp.down_proj.weight"].contiguous(),
+        ])
+
+    embed_weight = sd["talker.model.codec_embedding.weight"].contiguous()  # [3072, 2048]
+    lm_head_weight = sd["talker.codec_head.weight"].contiguous()
+
+    weights = dict(
+        embed_weight=embed_weight,
+        layer_weights=layer_weights,
+        final_norm_weight=sd["talker.model.norm.weight"].contiguous(),
+        lm_head_weight=lm_head_weight,
+        cos_table=cos_table,
+        sin_table=sin_table,
+        # Keep full sd alive so tensors aren't GC'd
+        _sd_ref=sd,
+    )
+
+    if verbose:
+        print("Talker weights loaded.")
+    return weights, None
+
+
+class TalkerDecoder(Decoder):
+    """Megakernel decoder loaded with Qwen3-TTS talker weights.
+
+    Identical kernel to Decoder — only weights differ.
+    step(token_id) takes a codec token id, returns next codec token id.
+    """
+
+    def __init__(self, model_name: str = "Qwen/Qwen3-TTS", verbose: bool = True):
+        weights, _ = load_talker_weights(model_name, verbose=verbose)
+        super().__init__(weights=weights, tokenizer=None)
+        if verbose:
+            print("TalkerDecoder ready.")
