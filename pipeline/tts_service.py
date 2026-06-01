@@ -31,7 +31,8 @@ from pipecat.frames.frames import (
 from pipecat.services.tts_service import TTSService, TextAggregationMode
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from qwen_megakernel.model import TalkerDecoder
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../qwen-tts-pipecat"))
+from tts_engine import TalkerDecoder
 
 SAMPLE_RATE = 24000
 CHUNK_TOKENS = 6      # tokens per audio chunk (~0.5 s at 12 Hz)
@@ -66,7 +67,7 @@ class QwenTTSEngine:
         # Megakernel decoder — loads talker backbone weights from same checkpoint
         if verbose:
             logger.info("Loading megakernel TalkerDecoder...")
-        self.decoder = TalkerDecoder(model_name=model_name, verbose=verbose)
+        self.decoder = TalkerDecoder(self._qwen, verbose=verbose)
 
         if verbose:
             logger.info("QwenTTSEngine ready.")
