@@ -14,7 +14,7 @@ The caller is responsible for running code_predictor (codebooks 1-15)
 and the speech tokenizer decoder to get PCM audio.
 
 Run:
-    python server.py [--host 0.0.0.0] [--port 8000] [--model Qwen/Qwen3-TTS]
+    python server.py [--host 0.0.0.0] [--port 8000] [--model Qwen/Qwen3-TTS-12Hz-0.6B-Base]
 """
 
 import argparse
@@ -42,7 +42,7 @@ def get_decoder() -> TalkerDecoder:
     return _decoder
 
 
-def init_decoder(model_name: str = "Qwen/Qwen3-TTS", verbose: bool = True):
+def init_decoder(model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base", verbose: bool = True):
     global _decoder
     _decoder = TalkerDecoder(model_name=model_name, verbose=verbose)
 
@@ -111,7 +111,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--model", default="Qwen/Qwen3-TTS")
+    parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
     parser.add_argument("--no-verbose", action="store_true")
     args = parser.parse_args()
 

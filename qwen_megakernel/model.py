@@ -297,7 +297,7 @@ def generate(prompt: str, max_tokens: int = 100, verbose: bool = True) -> str:
     return Decoder(verbose=verbose).generate(prompt, max_tokens)
 
 
-def load_talker_weights(model_name: str = "Qwen/Qwen3-TTS", verbose: bool = True):
+def load_talker_weights(model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base", verbose: bool = True):
     """Load Qwen3-TTS talker backbone weights into the megakernel weight dict.
 
     Only loads the talker transformer (28 layers, hidden 2048) — not the
@@ -367,7 +367,7 @@ class TalkerDecoder(Decoder):
     step(token_id) takes a codec token id, returns next codec token id.
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen3-TTS", verbose: bool = True):
+    def __init__(self, model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base", verbose: bool = True):
         weights, _ = load_talker_weights(model_name, verbose=verbose)
         super().__init__(weights=weights, tokenizer=None)
         if verbose:
