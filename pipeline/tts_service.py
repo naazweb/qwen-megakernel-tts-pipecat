@@ -66,7 +66,7 @@ class QwenTTSEngine:
         # Megakernel decoder — loads talker backbone weights from same checkpoint
         if verbose:
             logger.info("Loading megakernel TalkerDecoder...")
-        self.decoder = TalkerDecoder(self._qwen, verbose=verbose)
+        self.decoder = TalkerDecoder(model_name=model_name, verbose=verbose)
 
         if verbose:
             logger.info("QwenTTSEngine ready.")
