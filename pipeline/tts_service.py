@@ -45,7 +45,7 @@ class QwenTTSEngine:
       - TalkerDecoder      (megakernel — the hot decode loop)
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen3-TTS", device: str = "cuda",
+    def __init__(self, model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base", device: str = "cuda",
                  verbose: bool = True):
         from qwen_tts import Qwen3TTSModel
 
@@ -236,7 +236,7 @@ class QwenTTSService(TTSService):
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen3-TTS",
+        model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         device: str = "cuda",
         **kwargs,
     ):
