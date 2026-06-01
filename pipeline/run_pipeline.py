@@ -64,7 +64,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         ),
     )
 
-    tts = QwenTTSService(model_name="Qwen/Qwen3-TTS", device="cuda")
+    tts = QwenTTSService(model_name="Qwen/Qwen3-TTS-12Hz-0.6B-Base", device="cuda")
 
     context = LLMContext()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(context)
